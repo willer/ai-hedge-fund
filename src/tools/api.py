@@ -1,6 +1,9 @@
 import os
+import time
 import pandas as pd
 import requests
+import json
+import re
 
 from data.cache import get_cache
 from data.models import (
@@ -20,6 +23,42 @@ from data.models import (
 _cache = get_cache()
 
 
+def throttling_retry(max_retries=3):
+    """
+    Decorator to handle API throttling.
+    Will retry requests that return 429 (Too Many Requests) after waiting for the specified time.
+    """
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            retries = 0
+            while retries < max_retries:
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    error_message = str(e)
+                    # Check if it's a 429 error
+                    if "429" in error_message:
+                        # Try to extract wait time from error message
+                        wait_time_match = re.search(r'Expected available in (\d+) seconds', error_message)
+                        if wait_time_match:
+                            wait_time = int(wait_time_match.group(1)) + 1  # Add a buffer
+                        else:
+                            wait_time = (2 ** retries) * 5  # Exponential backoff
+                        
+                        print(f"Rate limited. Waiting {wait_time} seconds before retrying...")
+                        time.sleep(wait_time)
+                        retries += 1
+                    else:
+                        # Not a throttling error, re-raise
+                        raise
+            
+            # If we've exhausted all retries, raise the last error
+            raise Exception(f"Max retries exceeded for API call: {error_message}")
+        return wrapper
+    return decorator
+
+
+@throttling_retry()
 def get_prices(ticker: str, start_date: str, end_date: str) -> list[Price]:
     """Fetch price data from cache or API."""
     # Check cache first
@@ -51,6 +90,7 @@ def get_prices(ticker: str, start_date: str, end_date: str) -> list[Price]:
     return prices
 
 
+@throttling_retry()
 def get_financial_metrics(
     ticker: str,
     end_date: str,
@@ -89,6 +129,7 @@ def get_financial_metrics(
     return financial_metrics
 
 
+@throttling_retry()
 def search_line_items(
     ticker: str,
     line_items: list[str],
@@ -124,6 +165,7 @@ def search_line_items(
     return search_results[:limit]
 
 
+@throttling_retry()
 def get_insider_trades(
     ticker: str,
     end_date: str,
@@ -187,6 +229,7 @@ def get_insider_trades(
     return all_trades
 
 
+@throttling_retry()
 def get_company_news(
     ticker: str,
     end_date: str,
@@ -250,7 +293,7 @@ def get_company_news(
     return all_news
 
 
-
+@throttling_retry()
 def get_market_cap(
     ticker: str,
     end_date: str,
