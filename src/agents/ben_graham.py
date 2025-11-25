@@ -1,14 +1,14 @@
-from langchain_openai import ChatOpenAI
-from graph.state import AgentState, show_agent_reasoning
-from tools.api import get_financial_metrics, get_market_cap, search_line_items
+from src.graph.state import AgentState, show_agent_reasoning
+from src.tools.api import get_financial_metrics, get_market_cap, search_line_items
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 import json
 from typing_extensions import Literal
-from utils.progress import progress
-from utils.llm import call_llm
+from src.utils.progress import progress
+from src.utils.llm import call_llm
 import math
+from src.utils.api_key import get_api_key_from_state
 
 
 class BenGrahamSignal(BaseModel):
@@ -17,7 +17,7 @@ class BenGrahamSignal(BaseModel):
     reasoning: str
 
 
-def ben_graham_agent(state: AgentState):
+def ben_graham_agent(state: AgentState, agent_id: str = "ben_graham_agent"):
     """
     Analyzes stocks using Benjamin Graham's classic value-investing principles:
     1. Earnings stability over multiple years.
@@ -28,28 +28,29 @@ def ben_graham_agent(state: AgentState):
     data = state["data"]
     end_date = data["end_date"]
     tickers = data["tickers"]
-
+    api_key = get_api_key_from_state(state, "FINANCIAL_DATASETS_API_KEY")
+    
     analysis_data = {}
     graham_analysis = {}
 
     for ticker in tickers:
-        progress.update_status("ben_graham_agent", ticker, "Fetching financial metrics")
-        metrics = get_financial_metrics(ticker, end_date, period="annual", limit=10)
+        progress.update_status(agent_id, ticker, "Fetching financial metrics")
+        metrics = get_financial_metrics(ticker, end_date, period="annual", limit=10, api_key=api_key)
 
-        progress.update_status("ben_graham_agent", ticker, "Gathering financial line items")
-        financial_line_items = search_line_items(ticker, ["earnings_per_share", "revenue", "net_income", "book_value_per_share", "total_assets", "total_liabilities", "current_assets", "current_liabilities", "dividends_and_other_cash_distributions", "outstanding_shares"], end_date, period="annual", limit=10)
+        progress.update_status(agent_id, ticker, "Gathering financial line items")
+        financial_line_items = search_line_items(ticker, ["earnings_per_share", "revenue", "net_income", "book_value_per_share", "total_assets", "total_liabilities", "current_assets", "current_liabilities", "dividends_and_other_cash_distributions", "outstanding_shares"], end_date, period="annual", limit=10, api_key=api_key)
 
-        progress.update_status("ben_graham_agent", ticker, "Getting market cap")
-        market_cap = get_market_cap(ticker, end_date)
+        progress.update_status(agent_id, ticker, "Getting market cap")
+        market_cap = get_market_cap(ticker, end_date, api_key=api_key)
 
         # Perform sub-analyses
-        progress.update_status("ben_graham_agent", ticker, "Analyzing earnings stability")
+        progress.update_status(agent_id, ticker, "Analyzing earnings stability")
         earnings_analysis = analyze_earnings_stability(metrics, financial_line_items)
 
-        progress.update_status("ben_graham_agent", ticker, "Analyzing financial strength")
+        progress.update_status(agent_id, ticker, "Analyzing financial strength")
         strength_analysis = analyze_financial_strength(financial_line_items)
 
-        progress.update_status("ben_graham_agent", ticker, "Analyzing Graham valuation")
+        progress.update_status(agent_id, ticker, "Analyzing Graham valuation")
         valuation_analysis = analyze_valuation_graham(financial_line_items, market_cap)
 
         # Aggregate scoring
@@ -66,27 +67,29 @@ def ben_graham_agent(state: AgentState):
 
         analysis_data[ticker] = {"signal": signal, "score": total_score, "max_score": max_possible_score, "earnings_analysis": earnings_analysis, "strength_analysis": strength_analysis, "valuation_analysis": valuation_analysis}
 
-        progress.update_status("ben_graham_agent", ticker, "Generating Ben Graham analysis")
+        progress.update_status(agent_id, ticker, "Generating Ben Graham analysis")
         graham_output = generate_graham_output(
             ticker=ticker,
             analysis_data=analysis_data,
-            model_name=state["metadata"]["model_name"],
-            model_provider=state["metadata"]["model_provider"],
+            state=state,
+            agent_id=agent_id,
         )
 
         graham_analysis[ticker] = {"signal": graham_output.signal, "confidence": graham_output.confidence, "reasoning": graham_output.reasoning}
 
-        progress.update_status("ben_graham_agent", ticker, "Done")
+        progress.update_status(agent_id, ticker, "Done", analysis=graham_output.reasoning)
 
     # Wrap results in a single message for the chain
-    message = HumanMessage(content=json.dumps(graham_analysis), name="ben_graham_agent")
+    message = HumanMessage(content=json.dumps(graham_analysis), name=agent_id)
 
     # Optionally display reasoning
     if state["metadata"]["show_reasoning"]:
         show_agent_reasoning(graham_analysis, "Ben Graham Agent")
 
     # Store signals in the overall state
-    state["data"]["analyst_signals"]["ben_graham_agent"] = graham_analysis
+    state["data"]["analyst_signals"][agent_id] = graham_analysis
+
+    progress.update_status(agent_id, None, "Done")
 
     return {"messages": [message], "data": state["data"]}
 
@@ -279,8 +282,8 @@ def analyze_valuation_graham(financial_line_items: list, market_cap: float) -> d
 def generate_graham_output(
     ticker: str,
     analysis_data: dict[str, any],
-    model_name: str,
-    model_provider: str,
+    state: AgentState,
+    agent_id: str,
 ) -> BenGrahamSignal:
     """
     Generates an investment decision in the style of Benjamin Graham:
@@ -288,10 +291,11 @@ def generate_graham_output(
     - Return the result in a JSON structure: { signal, confidence, reasoning }.
     """
 
-    template = ChatPromptTemplate.from_messages([
-        (
-            "system",
-            """You are a Benjamin Graham AI agent, making investment decisions using his principles:
+    template = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                """You are a Benjamin Graham AI agent, making investment decisions using his principles:
             1. Insist on a margin of safety by buying below intrinsic value (e.g., using Graham Number, net-net).
             2. Emphasize the company's financial strength (low leverage, ample current assets).
             3. Prefer stable earnings over multiple years.
@@ -310,11 +314,11 @@ def generate_graham_output(
             For example, if bearish: "Despite consistent earnings, the current price of $50 exceeds our calculated Graham Number of $35, offering no margin of safety. Additionally, the current ratio of only 1.2 falls below Graham's preferred 2.0 threshold..."
                         
             Return a rational recommendation: bullish, bearish, or neutral, with a confidence level (0-100) and thorough reasoning.
-            """
-        ),
-        (
-            "human",
-            """Based on the following analysis, create a Graham-style investment signal:
+            """,
+            ),
+            (
+                "human",
+                """Based on the following analysis, create a Graham-style investment signal:
 
             Analysis Data for {ticker}:
             {analysis_data}
@@ -325,23 +329,20 @@ def generate_graham_output(
               "confidence": float (0-100),
               "reasoning": "string"
             }}
-            """
-        )
-    ])
+            """,
+            ),
+        ]
+    )
 
-    prompt = template.invoke({
-        "analysis_data": json.dumps(analysis_data, indent=2),
-        "ticker": ticker
-    })
+    prompt = template.invoke({"analysis_data": json.dumps(analysis_data, indent=2), "ticker": ticker})
 
     def create_default_ben_graham_signal():
         return BenGrahamSignal(signal="neutral", confidence=0.0, reasoning="Error in generating analysis; defaulting to neutral.")
 
     return call_llm(
         prompt=prompt,
-        model_name=model_name,
-        model_provider=model_provider,
         pydantic_model=BenGrahamSignal,
-        agent_name="ben_graham_agent",
+        agent_name=agent_id,
+        state=state,
         default_factory=create_default_ben_graham_signal,
     )
