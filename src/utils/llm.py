@@ -17,6 +17,7 @@ def call_llm(
 ) -> BaseModel:
     """
     Makes an LLM call with retry logic, handling both JSON supported and non-JSON supported models.
+    Supports both API mode and CLI mode (using claude/gemini/codex CLI tools).
 
     Args:
         prompt: The prompt to send to the LLM
@@ -29,7 +30,12 @@ def call_llm(
     Returns:
         An instance of the specified Pydantic model
     """
-    
+
+    # Check if CLI mode is enabled
+    cli_mode = False
+    if state:
+        cli_mode = state.get("metadata", {}).get("cli_mode", False)
+
     # Extract model configuration if state is provided and agent_name is available
     if state and agent_name:
         model_name, model_provider = get_agent_model_config(state, agent_name)
@@ -38,6 +44,85 @@ def call_llm(
         model_name = "gpt-4.1"
         model_provider = "OPENAI"
 
+    # AIDEV-NOTE: CLI mode uses subscription-based CLI tools instead of API calls
+    if cli_mode:
+        return _call_llm_cli_mode(
+            prompt=prompt,
+            pydantic_model=pydantic_model,
+            model_provider=model_provider,
+            agent_name=agent_name,
+            max_retries=max_retries,
+            default_factory=default_factory,
+        )
+
+    # Standard API mode
+    return _call_llm_api_mode(
+        prompt=prompt,
+        pydantic_model=pydantic_model,
+        model_name=model_name,
+        model_provider=model_provider,
+        agent_name=agent_name,
+        state=state,
+        max_retries=max_retries,
+        default_factory=default_factory,
+    )
+
+
+def _call_llm_cli_mode(
+    prompt: any,
+    pydantic_model: type[BaseModel],
+    model_provider: str,
+    agent_name: str | None = None,
+    max_retries: int = 3,
+    default_factory=None,
+) -> BaseModel:
+    """Call LLM using CLI tools (claude -p, gemini -p, codex exec)."""
+    from src.utils.llm_cli import call_llm_cli
+
+    # Convert prompt to string if it's a list of messages
+    if isinstance(prompt, list):
+        prompt_str = "\n".join(
+            msg.content if hasattr(msg, 'content') else str(msg)
+            for msg in prompt
+        )
+    elif hasattr(prompt, 'content'):
+        prompt_str = prompt.content
+    else:
+        prompt_str = str(prompt)
+
+    for attempt in range(max_retries):
+        try:
+            result = call_llm_cli(
+                prompt=prompt_str,
+                pydantic_model=pydantic_model,
+                model_provider=model_provider,
+            )
+            return result
+
+        except Exception as e:
+            if agent_name:
+                progress.update_status(agent_name, None, f"CLI Error - retry {attempt + 1}/{max_retries}")
+
+            if attempt == max_retries - 1:
+                print(f"Error in CLI LLM call after {max_retries} attempts: {e}")
+                if default_factory:
+                    return default_factory()
+                return create_default_response(pydantic_model)
+
+    return create_default_response(pydantic_model)
+
+
+def _call_llm_api_mode(
+    prompt: any,
+    pydantic_model: type[BaseModel],
+    model_name: str,
+    model_provider: str,
+    agent_name: str | None = None,
+    state: AgentState | None = None,
+    max_retries: int = 3,
+    default_factory=None,
+) -> BaseModel:
+    """Call LLM using API (original implementation)."""
     # Extract API keys from state if available
     api_keys = None
     if state:

@@ -52,6 +52,7 @@ def run_hedge_fund(
     selected_analysts: list[str] = [],
     model_name: str = "gpt-4.1",
     model_provider: str = "OpenAI",
+    cli_mode: bool = False,
 ):
     # Start progress tracking
     progress.start()
@@ -79,6 +80,7 @@ def run_hedge_fund(
                     "show_reasoning": show_reasoning,
                     "model_name": model_name,
                     "model_provider": model_provider,
+                    "cli_mode": cli_mode,
                 },
             },
         )
@@ -175,5 +177,6 @@ if __name__ == "__main__":
         selected_analysts=inputs.selected_analysts,
         model_name=inputs.model_name,
         model_provider=inputs.model_provider,
+        cli_mode=inputs.cli_mode,
     )
     print_trading_output(result)

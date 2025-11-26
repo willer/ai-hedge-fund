@@ -44,6 +44,7 @@ class BacktestEngine:
         model_provider: str,
         selected_analysts: list[str] | None,
         initial_margin_requirement: float,
+        cli_mode: bool = False,
     ) -> None:
         self._agent = agent
         self._tickers = tickers
@@ -53,6 +54,7 @@ class BacktestEngine:
         self._model_name = model_name
         self._model_provider = model_provider
         self._selected_analysts = selected_analysts
+        self._cli_mode = cli_mode
 
         self._portfolio = Portfolio(
             tickers=tickers,
@@ -89,8 +91,7 @@ class BacktestEngine:
             get_insider_trades(ticker, self._end_date, start_date=self._start_date, limit=1000)
             get_company_news(ticker, self._end_date, start_date=self._start_date, limit=1000)
         
-        # Preload data for SPY for benchmark comparison
-        get_prices("SPY", self._start_date, self._end_date)
+        # SPY benchmark data fetched on-demand via BenchmarkCalculator (uses yfinance fallback)
 
 
     def run_backtest(self) -> PerformanceMetrics:
@@ -138,6 +139,7 @@ class BacktestEngine:
                 model_name=self._model_name,
                 model_provider=self._model_provider,
                 selected_analysts=self._selected_analysts,
+                cli_mode=self._cli_mode,
             )
             decisions = agent_output["decisions"]
 

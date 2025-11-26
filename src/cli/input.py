@@ -187,7 +187,7 @@ def select_model(use_ollama: bool, model_flag: str | None = None) -> tuple[str, 
     return model_name, model_provider or ""
 
 
-def resolve_dates(start_date: str | None, end_date: str | None, *, default_months_back: int | None = None) -> tuple[str, str]:
+def resolve_dates(start_date: str | None, end_date: str | None, *, default_months_back: int | None = None, default_weeks_back: int | None = None) -> tuple[str, str]:
     if start_date:
         try:
             datetime.strptime(start_date, "%Y-%m-%d")
@@ -203,9 +203,13 @@ def resolve_dates(start_date: str | None, end_date: str | None, *, default_month
     if start_date:
         final_start = start_date
     else:
-        months = default_months_back if default_months_back is not None else 3
         end_date_obj = datetime.strptime(final_end, "%Y-%m-%d")
-        final_start = (end_date_obj - relativedelta(months=months)).strftime("%Y-%m-%d")
+        if default_weeks_back is not None:
+            final_start = (end_date_obj - relativedelta(weeks=default_weeks_back)).strftime("%Y-%m-%d")
+        elif default_months_back is not None:
+            final_start = (end_date_obj - relativedelta(months=default_months_back)).strftime("%Y-%m-%d")
+        else:
+            final_start = (end_date_obj - relativedelta(months=3)).strftime("%Y-%m-%d")
     return final_start, final_end
 
 
@@ -221,6 +225,7 @@ class CLIInputs:
     margin_requirement: float
     show_reasoning: bool = False
     show_agent_graph: bool = False
+    cli_mode: bool = False  # Use CLI tools (claude/gemini/codex) instead of API
     raw_args: Optional[argparse.Namespace] = None
 
 
@@ -228,7 +233,8 @@ def parse_cli_inputs(
     *,
     description: str,
     require_tickers: bool,
-    default_months_back: int | None,
+    default_months_back: int | None = None,
+    default_weeks_back: int | None = None,
     include_graph_flag: bool = False,
     include_reasoning_flag: bool = False,
 ) -> CLIInputs:
@@ -260,6 +266,20 @@ def parse_cli_inputs(
     if include_graph_flag:
         parser.add_argument("--show-agent-graph", action="store_true", help="Show the agent graph")
 
+    # API mode flag - use API calls instead of CLI tools (CLI is default)
+    parser.add_argument(
+        "--api-mode",
+        action="store_true",
+        help="Use API calls instead of CLI tools. Requires API keys to be configured.",
+    )
+    parser.add_argument(
+        "--cli-provider",
+        type=str,
+        default="claude",
+        choices=["claude", "gemini", "codex"],
+        help="Which CLI tool to use (default: claude)",
+    )
+
     args = parser.parse_args()
 
     # Normalize parsed values
@@ -268,8 +288,22 @@ def parse_cli_inputs(
         "analysts_all": getattr(args, "analysts_all", False),
         "analysts": getattr(args, "analysts", None),
     })
-    model_name, model_provider = select_model(getattr(args, "ollama", False), getattr(args, "model", None))
-    start_date, end_date = resolve_dates(getattr(args, "start_date", None), getattr(args, "end_date", None), default_months_back=default_months_back)
+    start_date, end_date = resolve_dates(getattr(args, "start_date", None), getattr(args, "end_date", None), default_months_back=default_months_back, default_weeks_back=default_weeks_back)
+
+    api_mode = getattr(args, "api_mode", False)
+    cli_provider = getattr(args, "cli_provider", "claude")
+
+    if api_mode:
+        # API mode - use traditional API calls with model selection
+        model_name, model_provider = select_model(getattr(args, "ollama", False), getattr(args, "model", None))
+        cli_mode = False
+    else:
+        # CLI mode (default) - use CLI tools
+        provider_map = {"claude": "Anthropic", "gemini": "Google", "codex": "OpenAI"}
+        model_provider = provider_map.get(cli_provider, "Anthropic")
+        model_name = "cli-mode"
+        cli_mode = True
+        print(f"\n{Fore.CYAN}Using {cli_provider} CLI{Style.RESET_ALL} (use --api-mode for API calls, --cli-provider to change)\n")
 
     return CLIInputs(
         tickers=tickers,
@@ -282,6 +316,7 @@ def parse_cli_inputs(
         margin_requirement=getattr(args, "margin_requirement", 0.0),
         show_reasoning=getattr(args, "show_reasoning", False),
         show_agent_graph=getattr(args, "show_agent_graph", False),
+        cli_mode=cli_mode,
         raw_args=args,
     )
 
